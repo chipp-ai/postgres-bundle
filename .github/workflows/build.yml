@@ -1,0 +1,231 @@
+name: Build PostgreSQL + extensions bundle
+
+# Custom PostgreSQL binary distribution for alchemist-desktop's
+# embedded-pg slot. Produces archives matching the layout the
+# `postgresql_embedded` Rust crate expects (see its theseus matcher:
+# `postgresql-<version>-<target_triple>.tar.gz`), but built WITH:
+#
+#   • full standard contrib (pgcrypto, uuid-ossp, citext, btree_gin,
+#     btree_gist, hstore, intarray, ltree, pg_trgm, tablefunc, etc.)
+#   • OpenSSL linking (required for pgcrypto)
+#   • pgvector (third-party, the killer feature this bundle exists
+#     for — vector embeddings out of the box for every app)
+#
+# Trigger by pushing a tag of the shape `v<pg>+pgvector-<ver>`
+# (e.g. `v16.3.0+pgvector-0.7.4`). The build attaches three assets
+# to the resulting GitHub release; the desktop crate downloads
+# whichever matches its target triple at first launch.
+#
+# Why we own this instead of using theseus-rs/postgresql-binaries
+# upstream: theseus-rs builds without OpenSSL (no pgcrypto) and
+# never ships pgvector. We need both, and "every alchemist customer
+# app gets the same capability set everywhere" is a foundational
+# product requirement, not a per-environment hack.
+
+on:
+  push:
+    tags:
+      - "v*+pgvector-*"
+  workflow_dispatch:
+    inputs:
+      postgres_version:
+        description: "PostgreSQL source version (e.g. 16.3)"
+        required: true
+        default: "16.3"
+      pgvector_version:
+        description: "pgvector tag (e.g. v0.7.4)"
+        required: true
+        default: "v0.7.4"
+
+permissions:
+  contents: write # for creating the release + uploading assets
+
+jobs:
+  parse-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      pg: ${{ steps.v.outputs.pg }}
+      pgvector: ${{ steps.v.outputs.pgvector }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.postgres_version }}" ]; then
+            PG="${{ github.event.inputs.postgres_version }}"
+            PGV="${{ github.event.inputs.pgvector_version }}"
+            TAG="v${PG}+pgvector-${PGV#v}"
+          else
+            # Parse from the pushed tag: vMAJOR.MINOR.PATCH+pgvector-X.Y.Z
+            TAG="${GITHUB_REF##*/}"
+            PG="$(echo "$TAG" | sed -E 's/^v([^+]+)\+pgvector-.*$/\1/')"
+            PGV="v$(echo "$TAG" | sed -E 's/^v[^+]+\+pgvector-(.*)$/\1/')"
+          fi
+          echo "pg=$PG" >> "$GITHUB_OUTPUT"
+          echo "pgvector=$PGV" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved: pg=$PG pgvector=$PGV tag=$TAG"
+
+  build:
+    needs: parse-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_suffix: "" # we set the full filename below
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_suffix: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_suffix: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # OpenSSL via Homebrew — Apple's libssl is private API and
+          # postgres' configure refuses to use it. e2fs uuid backend
+          # picked deliberately: native to macOS (no extra dep) and
+          # uuid-ossp builds against it cleanly. libxml2/libxslt for
+          # xml() functions, readline for psql REPL niceties.
+          brew update
+          brew install openssl@3 readline libxml2 libxslt zlib icu4c pkg-config
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libssl-dev libreadline-dev zlib1g-dev \
+            libxml2-dev libxslt1-dev uuid-dev libicu-dev pkg-config \
+            bison flex perl
+
+      - name: Download + extract PostgreSQL ${{ needs.parse-versions.outputs.pg }} source
+        env:
+          PG_VER: ${{ needs.parse-versions.outputs.pg }}
+        run: |
+          set -e
+          curl -fL -o postgres.tar.bz2 \
+            "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2"
+          tar -xjf postgres.tar.bz2
+          mv "postgresql-${PG_VER}" postgres-src
+          ls postgres-src/contrib/ | head
+
+      - name: Configure + build PostgreSQL
+        env:
+          PG_VER: ${{ needs.parse-versions.outputs.pg }}
+        run: |
+          set -e
+          INSTALL_PREFIX="$PWD/staging"
+          mkdir -p "$INSTALL_PREFIX"
+
+          cd postgres-src
+
+          # Build flags differ slightly between platforms because of where
+          # the package managers put OpenSSL + uuid.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+            ICU_PREFIX="$(brew --prefix icu4c)"
+            export CPPFLAGS="-I$OPENSSL_PREFIX/include -I$ICU_PREFIX/include"
+            export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$ICU_PREFIX/lib"
+            export PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
+            CONFIGURE_EXTRA="--with-uuid=e2fs"
+          else
+            CONFIGURE_EXTRA="--with-uuid=ossp"
+          fi
+
+          ./configure \
+            --prefix="$INSTALL_PREFIX" \
+            --with-openssl \
+            --with-libxml \
+            --with-libxslt \
+            --with-icu \
+            $CONFIGURE_EXTRA
+
+          # Core + contrib. -j uses available parallelism.
+          make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)" world-bin
+          make install-world-bin
+          # Verify pgcrypto + uuid-ossp .so/.dylib landed in lib/.
+          ls "$INSTALL_PREFIX"/lib/ | grep -E "pgcrypto|uuid-ossp"
+
+      - name: Build + install pgvector
+        env:
+          PGVECTOR_VER: ${{ needs.parse-versions.outputs.pgvector }}
+        run: |
+          set -e
+          INSTALL_PREFIX="$PWD/staging"
+          export PG_CONFIG="$INSTALL_PREFIX/bin/pg_config"
+          export PATH="$INSTALL_PREFIX/bin:$PATH"
+
+          git clone --depth 1 --branch "$PGVECTOR_VER" \
+            https://github.com/pgvector/pgvector.git pgvector-src
+          cd pgvector-src
+          make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)"
+          make install
+
+          # Verify vector.so/.dylib landed.
+          ls "$INSTALL_PREFIX"/lib/ | grep -E "vector"
+          ls "$INSTALL_PREFIX"/share/postgresql*/extension/ 2>/dev/null \
+            || ls "$INSTALL_PREFIX"/share/extension/ | grep -E "vector"
+
+      - name: Package archive
+        id: pkg
+        env:
+          PG_VER: ${{ needs.parse-versions.outputs.pg }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -e
+          # Filename must match the postgresql_embedded crate's theseus
+          # matcher exactly: postgresql-<version>-<target_triple>.tar.gz.
+          # The crate parses the version as semver, so 16.3 → 16.3.0 in
+          # the request. We name the archive with the .0 patch suffix.
+          PG_FULL="${PG_VER}"
+          # If PG_VER has no patch (e.g. "16.3"), pad to "16.3.0"
+          case "$PG_VER" in
+            *.*.*) PG_FULL="$PG_VER" ;;
+            *.*)   PG_FULL="${PG_VER}.0" ;;
+          esac
+          ARCHIVE="postgresql-${PG_FULL}-${TARGET}.tar.gz"
+          tar -czf "$ARCHIVE" -C staging .
+          ls -lh "$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.archive }}
+          retention-days: 7
+
+  release:
+    needs: [parse-versions, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./assets
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la ./assets
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.parse-versions.outputs.tag }}
+        run: |
+          set -e
+          # Idempotent: create release if missing, then re-upload assets
+          # (overwrites by name).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "PostgreSQL ${{ needs.parse-versions.outputs.pg }} + pgvector ${{ needs.parse-versions.outputs.pgvector }} + full standard contrib. Bundled for alchemist-desktop's embedded-pg."
+          fi
+          for f in ./assets/*.tar.gz; do
+            gh release upload "$TAG" "$f" --clobber
+          done
