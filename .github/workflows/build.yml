@@ -25,7 +25,12 @@ name: Build PostgreSQL + extensions bundle
 on:
   push:
     tags:
-      - "v*+pgvector-*"
+      # GitHub Actions' tag-glob parser rejects '+' as a pattern
+      # character (even though git itself accepts '+' in tag names),
+      # so we can't write `v*+pgvector-*` directly. Match any v-N
+      # prefix and let the `parse-versions` job extract pg + pgvector
+      # from the full ref name.
+      - "v[0-9]*"
   workflow_dispatch:
     inputs:
       postgres_version:
