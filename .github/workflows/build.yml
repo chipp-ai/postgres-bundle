@@ -113,10 +113,25 @@ jobs:
           PG_VER: ${{ needs.parse-versions.outputs.pg }}
         run: |
           set -e
+          # PostgreSQL's release artifacts use the SHORT version (X.Y)
+          # in both the source path AND the archive name — the upstream
+          # convention is to omit a trailing .0 patch. The tag we ship
+          # here carries the LONG semver-padded form (16.3.0) to match
+          # what the postgresql_embedded Rust crate's theseus matcher
+          # expects in the OUTPUT archive (postgresql-16.3.0-<triple>
+          # .tar.gz). Without stripping the trailing .0 here the curl
+          # 404s with "No such file or directory" — that's exactly
+          # what kept this workflow failing in the queue for 17 hours
+          # on the v16.3.0+pgvector-0.7.4 run; macOS-14 + Ubuntu both
+          # died at this step within 50s.
+          PG_SHORT="$PG_VER"
+          case "$PG_VER" in
+            *.*.0) PG_SHORT="${PG_VER%.0}" ;;
+          esac
           curl -fL -o postgres.tar.bz2 \
-            "https://ftp.postgresql.org/pub/source/v${PG_VER}/postgresql-${PG_VER}.tar.bz2"
+            "https://ftp.postgresql.org/pub/source/v${PG_SHORT}/postgresql-${PG_SHORT}.tar.bz2"
           tar -xjf postgres.tar.bz2
-          mv "postgresql-${PG_VER}" postgres-src
+          mv "postgresql-${PG_SHORT}" postgres-src
           ls postgres-src/contrib/ | head
 
       - name: Configure + build PostgreSQL
