@@ -80,17 +80,23 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             archive_suffix: "" # we set the full filename below
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive_suffix: ""
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive_suffix: ""
+          # NOTE: x86_64-apple-darwin (Intel mac, macos-13) was REMOVED.
+          # alchemist-desktop ships Apple-Silicon-only — see
+          # alchemist-ai/.github/workflows/desktop-release.yml ("darwin-
+          # aarch64 ONLY. No Intel / universal build"), runs-on macos-14.
+          # So nothing ever requests an x86_64-apple-darwin PG asset, and
+          # GitHub-hosted macos-13 runners queue-starved this leg for the
+          # full job ceiling (24h on 2026-05-20, again ~1h+ on 2026-06-09)
+          # — blocking the release for an asset with zero consumers. If an
+          # Intel-mac desktop build is ever reintroduced, add this leg back
+          # (and expect to solve the runner-availability problem then).
     runs-on: ${{ matrix.os }}
-    # Fail fast instead of burning the 24h job ceiling. A leg that can't
-    # get a GitHub-hosted runner (observed on macos-13 / x86_64-apple-
-    # darwin, which queue-starved for 24h on the 2026-05-20 run) now
-    # gives up in 90 min so the run reports a clear result quickly.
+    # Fail fast instead of burning the job ceiling if a runner can't be
+    # scheduled. Both remaining legs (arm64 macOS, x86_64 linux) build in
+    # ~2-3 min, so 90 min is a generous ceiling, not a normal duration.
     timeout-minutes: 90
     steps:
       - name: Install build dependencies (macOS)

@@ -16,13 +16,20 @@ So we own a binary distribution. Same archive layout the upstream crate expects;
 - Full standard `contrib/` extensions: `pgcrypto`, `uuid-ossp`, `citext`, `btree_gin`, `btree_gist`, `hstore`, `intarray`, `ltree`, `pg_trgm`, `tablefunc`, `xml2`, … (the result of `make install-world-bin`)
 - [`pgvector`](https://github.com/pgvector/pgvector) at a pinned version, built against the same Postgres
 
-Three archives are produced per release, matching the target triples the `postgresql_embedded` matcher expects:
+Two archives are produced per release, matching the target triples the `postgresql_embedded` matcher expects:
 
 ```
 postgresql-16.3.0-aarch64-apple-darwin.tar.gz
-postgresql-16.3.0-x86_64-apple-darwin.tar.gz
 postgresql-16.3.0-x86_64-unknown-linux-gnu.tar.gz
 ```
+
+> **No `x86_64-apple-darwin` (Intel mac).** alchemist-desktop ships
+> Apple-Silicon-only (see `alchemist-ai/.github/workflows/desktop-release.yml`,
+> which builds `darwin-aarch64` exclusively on `macos-14`), so nothing ever
+> requests an Intel-mac PG asset. The `macos-13` runner also queue-starved
+> that leg for the full job ceiling on multiple runs, blocking the release
+> for a zero-consumer artifact. Re-add the matrix leg if an Intel/universal
+> desktop build is ever reintroduced.
 
 ## One-time setup
 
