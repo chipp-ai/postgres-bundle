@@ -59,13 +59,23 @@ jobs:
           if [ -n "${{ github.event.inputs.postgres_version }}" ]; then
             PG="${{ github.event.inputs.postgres_version }}"
             PGV="${{ github.event.inputs.pgvector_version }}"
-            TAG="v${PG}+pgvector-${PGV#v}"
           else
             # Parse from the pushed tag: vMAJOR.MINOR.PATCH+pgvector-X.Y.Z
-            TAG="${GITHUB_REF##*/}"
-            PG="$(echo "$TAG" | sed -E 's/^v([^+]+)\+pgvector-.*$/\1/')"
-            PGV="v$(echo "$TAG" | sed -E 's/^v[^+]+\+pgvector-(.*)$/\1/')"
+            TAG_IN="${GITHUB_REF##*/}"
+            PG="$(echo "$TAG_IN" | sed -E 's/^v([^+]+)\+pgvector-.*$/\1/')"
+            PGV="v$(echo "$TAG_IN" | sed -E 's/^v[^+]+\+pgvector-(.*)$/\1/')"
           fi
+          # Normalize PG to a full X.Y.Z. The desktop's postgresql_embedded
+          # pins `=16.3.0` and the archives are named postgresql-16.3.0-
+          # <triple>, so the release TAG must carry the .0 too — a bare
+          # X.Y (e.g. dispatch input "16.3") produced tag v16.3+... and a
+          # 16.3 release the crate couldn't match. The Download step strips
+          # the trailing .0 to fetch upstream source, so padding is safe.
+          case "$PG" in
+            *.*.*) ;;
+            *.*) PG="${PG}.0" ;;
+          esac
+          TAG="v${PG}+pgvector-${PGV#v}"
           echo "pg=$PG" >> "$GITHUB_OUTPUT"
           echo "pgvector=$PGV" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -254,6 +264,11 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no actions/checkout, so `gh` has no local git
+          # remote to infer the repo from ("fatal: not a git repository").
+          # GH_REPO gives every `gh release` call its target explicitly —
+          # cheaper than adding a checkout just for repo context.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.parse-versions.outputs.tag }}
         run: |
           set -e
