@@ -87,6 +87,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive_suffix: ""
     runs-on: ${{ matrix.os }}
+    # Fail fast instead of burning the 24h job ceiling. A leg that can't
+    # get a GitHub-hosted runner (observed on macos-13 / x86_64-apple-
+    # darwin, which queue-starved for 24h on the 2026-05-20 run) now
+    # gives up in 90 min so the run reports a clear result quickly.
+    timeout-minutes: 90
     steps:
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -154,7 +159,14 @@ jobs:
             export PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
             CONFIGURE_EXTRA="--with-uuid=e2fs"
           else
-            CONFIGURE_EXTRA="--with-uuid=ossp"
+            # e2fs (libuuid), NOT ossp. We install `uuid-dev` (= libuuid,
+            # the e2fsprogs backend) above — NOT `libossp-uuid-dev` — so
+            # `--with-uuid=ossp` fails configure with "library 'ossp-uuid'
+            # or 'uuid' is required for OSSP UUID" (the 25s ubuntu failure
+            # on the 2026-05-20 run). The `uuid-ossp` CONTRIB extension
+            # still builds the same either way — the flag only selects the
+            # backend lib — matching the working macOS leg's e2fs choice.
+            CONFIGURE_EXTRA="--with-uuid=e2fs"
           fi
 
           ./configure \
