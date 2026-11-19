@@ -146,8 +146,15 @@ def fix(root):
                 if src is None:
                     sys.exit(f"{path}: cannot resolve {dep}")
             elif "/" not in dep:
-                # Bare leaf name: resolved next to the file at link time.
-                src = os.path.join(origins.get(path, os.path.dirname(path)), dep)
+                # Bare leaf name (ICU's own install names are like this):
+                # look next to the file's origin, in lib/, then in
+                # $DYLIB_SEARCH_PATH (the build's -L dirs).
+                dirs = [origins.get(path, os.path.dirname(path)), libdir]
+                dirs += [d for d in os.environ.get("DYLIB_SEARCH_PATH", "").split(":") if d]
+                src = next(
+                    (os.path.join(d, dep) for d in dirs if os.path.exists(os.path.join(d, dep))),
+                    os.path.join(dirs[0], dep),
+                )
             else:
                 src = dep
             target = os.path.join(libdir, name)

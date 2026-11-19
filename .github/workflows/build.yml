@@ -306,7 +306,10 @@ jobs:
           # only ran on a machine with that exact layout (initdb crashed
           # everywhere else). Copy every non-system dylib into lib/, point
           # all load commands at @loader_path, and ad-hoc re-sign.
-          python3 -I repo/scripts/macos-relocate.py fix staging
+          # ICU records bare install names (libicuuc.77.dylib), so the
+          # script also searches the source-built deps for those.
+          DYLIB_SEARCH_PATH="$GITHUB_WORKSPACE/deps/lib" \
+            python3 -I repo/scripts/macos-relocate.py fix staging
 
       - name: Verify macOS install is relocatable
         if: runner.os == 'macOS'
