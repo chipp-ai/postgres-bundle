@@ -250,7 +250,7 @@ jobs:
             # this upstream), so the build passes the 12.0 availability
             # check.
             export ac_cv_func_strchrnul=no
-            sed -i '' 's/\bstrchrnul(/pg_strchrnul_compat(/g' src/port/snprintf.c
+            sed -i '' 's/strchrnul(/pg_strchrnul_compat(/g' src/port/snprintf.c
             grep -n "pg_strchrnul_compat" src/port/snprintf.c
           else
             # e2fs (libuuid), NOT ossp. We install `uuid-dev` (= libuuid,
