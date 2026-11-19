@@ -12,7 +12,11 @@ name: Build PostgreSQL + extensions bundle
 #     for — vector embeddings out of the box for every app)
 #
 # Trigger by pushing a tag of the shape `v<pg>+pgvector-<ver>`
-# (e.g. `v16.3.0+pgvector-0.7.4`). The build attaches three assets
+# (e.g. `v16.3.0+pgvector-0.7.4`). A rebuild of the same versions adds a
+# revision suffix: `v16.3.0+pgvector-0.7.4-r2`. The suffix only names the
+# release; the archives keep the plain `postgresql-<pg>-<triple>` names.
+# postgresql_archive picks the highest matching tag by semver, and build
+# metadata `pgvector-0.7.4-r2` sorts above `pgvector-0.7.4`. The build attaches three assets
 # to the resulting GitHub release; the desktop crate downloads
 # whichever matches its target triple at first launch.
 #
@@ -41,6 +45,10 @@ on:
         description: "pgvector tag (e.g. v0.7.4)"
         required: true
         default: "v0.7.4"
+      revision:
+        description: "Bundle revision suffix for a rebuild of the same versions (e.g. r2); empty for none"
+        required: false
+        default: ""
 
 permissions:
   contents: write # for creating the release + uploading assets
@@ -59,11 +67,16 @@ jobs:
           if [ -n "${{ github.event.inputs.postgres_version }}" ]; then
             PG="${{ github.event.inputs.postgres_version }}"
             PGV="${{ github.event.inputs.pgvector_version }}"
+            REV="${{ github.event.inputs.revision }}"
           else
-            # Parse from the pushed tag: vMAJOR.MINOR.PATCH+pgvector-X.Y.Z
+            # Parse from the pushed tag: vMAJOR.MINOR.PATCH+pgvector-X.Y.Z[-rN]
             TAG_IN="${GITHUB_REF##*/}"
             PG="$(echo "$TAG_IN" | sed -E 's/^v([^+]+)\+pgvector-.*$/\1/')"
             PGV="v$(echo "$TAG_IN" | sed -E 's/^v[^+]+\+pgvector-(.*)$/\1/')"
+            REV=""
+            case "$PGV" in
+              *-r[0-9]*) REV="${PGV##*-}"; PGV="${PGV%-*}" ;;
+            esac
           fi
           # Normalize PG to a full X.Y.Z. The desktop's postgresql_embedded
           # pins `=16.3.0` and the archives are named postgresql-16.3.0-
@@ -75,7 +88,7 @@ jobs:
             *.*.*) ;;
             *.*) PG="${PG}.0" ;;
           esac
-          TAG="v${PG}+pgvector-${PGV#v}"
+          TAG="v${PG}+pgvector-${PGV#v}${REV:+-$REV}"
           echo "pg=$PG" >> "$GITHUB_OUTPUT"
           echo "pgvector=$PGV" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -109,6 +122,10 @@ jobs:
     # ~2-3 min, so 90 min is a generous ceiling, not a normal duration.
     timeout-minutes: 90
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -171,7 +188,9 @@ jobs:
             OPENSSL_PREFIX="$(brew --prefix openssl@3)"
             ICU_PREFIX="$(brew --prefix icu4c)"
             export CPPFLAGS="-I$OPENSSL_PREFIX/include -I$ICU_PREFIX/include"
-            export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$ICU_PREFIX/lib"
+            # headerpad: room for install_name_tool to rewrite load
+            # commands in the relocation step below.
+            export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$ICU_PREFIX/lib -Wl,-headerpad_max_install_names"
             export PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
             CONFIGURE_EXTRA="--with-uuid=e2fs"
           else
@@ -219,6 +238,29 @@ jobs:
           ls "$INSTALL_PREFIX"/share/postgresql*/extension/ 2>/dev/null \
             || ls "$INSTALL_PREFIX"/share/extension/ | grep -E "vector"
 
+      - name: Make macOS install relocatable
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          # As built, the binaries load libpq & co. from this runner's
+          # staging path and OpenSSL/ICU from /opt/homebrew, so the archive
+          # only ran on a machine with that exact layout (initdb crashed
+          # everywhere else). Copy every non-system dylib into lib/, point
+          # all load commands at @loader_path, and ad-hoc re-sign.
+          python3 -I repo/scripts/macos-relocate.py fix staging
+
+      - name: Verify macOS install is relocatable
+        if: runner.os == 'macOS'
+        run: python3 -I repo/scripts/macos-relocate.py check staging
+
+      - name: Write bundle marker
+        env:
+          TAG: ${{ needs.parse-versions.outputs.tag }}
+        run: |
+          # The desktop reads this to tell a cached install of this release
+          # from an older (or upstream theseus-rs) one at the same PG version.
+          echo "$TAG" > staging/BUNDLE_RELEASE
+
       - name: Package archive
         id: pkg
         env:
@@ -240,6 +282,9 @@ jobs:
           tar -czf "$ARCHIVE" -C staging .
           ls -lh "$ARCHIVE"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test the archive from a fresh directory
+        run: repo/scripts/smoke-test.sh "${{ steps.pkg.outputs.archive }}"
 
       - name: Upload as build artifact
         uses: actions/upload-artifact@v4
@@ -277,7 +322,8 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --title "$TAG" \
-              --notes "PostgreSQL ${{ needs.parse-versions.outputs.pg }} + pgvector ${{ needs.parse-versions.outputs.pgvector }} + full standard contrib. Bundled for alchemist-desktop's embedded-pg."
+              --target "$GITHUB_SHA" \
+              --notes "PostgreSQL ${{ needs.parse-versions.outputs.pg }} + pgvector ${{ needs.parse-versions.outputs.pgvector }} + full standard contrib. Bundled for alchemist-desktop's embedded-pg. macOS archives are relocatable (all non-system dylibs bundled under lib/ with @loader_path load commands)."
           fi
           for f in ./assets/*.tar.gz; do
             gh release upload "$TAG" "$f" --clobber

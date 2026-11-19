@@ -31,6 +31,24 @@ postgresql-16.3.0-x86_64-unknown-linux-gnu.tar.gz
 > for a zero-consumer artifact. Re-add the matrix leg if an Intel/universal
 > desktop build is ever reintroduced.
 
+## macOS archives are relocatable
+
+A plain `make install` on macOS leaves absolute load commands in every
+binary: libpq & co. point at the CI runner's staging path and OpenSSL/ICU
+point at `/opt/homebrew`, so `initdb` crashes on any other Mac. The
+workflow fixes this with `scripts/macos-relocate.py fix`, which copies
+every non-system dylib (libssl, libcrypto, libicu*) into `lib/`, rewrites
+all load commands and install names to `@loader_path/...`, and ad-hoc
+re-signs every Mach-O. `scripts/macos-relocate.py check` then fails the
+build on any reference outside `/usr/lib`, `/System` or the tree itself,
+and `scripts/smoke-test.sh` extracts the finished archive into a temp dir
+and runs `initdb`, `pg_ctl start` and `CREATE EXTENSION vector, pgcrypto,
+"uuid-ossp"` with every `DYLD_*` variable unset.
+
+Each archive carries a `BUNDLE_RELEASE` file at its root holding the
+release tag, so the desktop can tell a cached install of the current
+release from an older one at the same Postgres version.
+
 ## One-time setup
 
 1. Create the GitHub repo `chipp-ai/postgres-bundle` (private or public, doesn't matter — the crate just walks the releases API).
@@ -51,7 +69,7 @@ git tag v16.3.0+pgvector-0.7.4
 git push origin v16.3.0+pgvector-0.7.4
 ```
 
-Tag format is `v<postgres-version>+pgvector-<pgvector-version>`. The workflow parses both parts, builds on three runners in parallel (macOS arm64, macOS x86_64, linux x86_64), and attaches all three tarballs to the resulting GitHub release.
+Tag format is `v<postgres-version>+pgvector-<pgvector-version>`, with an optional `-rN` suffix for a rebuild of the same versions (e.g. `v16.3.0+pgvector-0.7.4-r2`). The workflow parses the parts, builds on two runners in parallel (macOS arm64, linux x86_64), and attaches both tarballs to the resulting GitHub release. The archive names never carry the revision; `postgresql_archive` picks the highest matching tag by semver, and `pgvector-0.7.4-r2` sorts above `pgvector-0.7.4`. (Build metadata compares as text, so after `-r9` the next revision is `-r90`, not `-r10`.)
 
 You can also trigger a build without a tag via `workflow_dispatch` — useful for testing changes to the workflow itself.
 
