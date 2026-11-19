@@ -100,10 +100,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-14 runners were retired ("configuration not supported",
+          # 2026-11-19). The runner OS no longer matters for compatibility:
+          # MACOSX_DEPLOYMENT_TARGET below pins every binary to macOS 12.
+          - os: macos-15
             target: aarch64-apple-darwin
             archive_suffix: "" # we set the full filename below
-          - os: ubuntu-latest
+          # Pinned: ubuntu-latest moved to GCC 15 (C23 default), which PG
+          # 16.3 does not compile under, and a newer image would also raise
+          # the glibc floor of the archive.
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive_suffix: ""
           # NOTE: x86_64-apple-darwin (Intel mac, macos-13) was REMOVED.
@@ -121,6 +127,15 @@ jobs:
     # scheduled. Both remaining legs (arm64 macOS, x86_64 linux) build in
     # ~2-3 min, so 90 min is a generous ceiling, not a normal duration.
     timeout-minutes: 90
+    env:
+      # macOS only (ignored on Linux): alchemist-desktop's
+      # minimumSystemVersion. Every Mach-O in the archive, including the
+      # bundled OpenSSL and ICU, is built for it; the relocation check
+      # fails the build on anything newer.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      MACOS_MIN: "12.0"
+      OPENSSL_VER: "3.5.4"
+      ICU_VER: "77-1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,13 +144,48 @@ jobs:
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          # OpenSSL via Homebrew — Apple's libssl is private API and
-          # postgres' configure refuses to use it. e2fs uuid backend
-          # picked deliberately: native to macOS (no extra dep) and
-          # uuid-ossp builds against it cleanly. libxml2/libxslt for
-          # xml() functions, readline for psql REPL niceties.
-          brew update
-          brew install openssl@3 readline libxml2 libxslt zlib icu4c pkg-config
+          # Only build tools from Homebrew. OpenSSL and ICU are built from
+          # source below: Homebrew bottles target the runner's own macOS
+          # (minos 15 here), so bundling them would make the archive refuse
+          # to load on older Macs. libxml2/libxslt/zlib/libedit come from
+          # the SDK (/usr/lib). e2fs uuid backend: native to macOS.
+          brew install pkg-config
+
+      - name: Cache OpenSSL + ICU (macOS)
+        if: runner.os == 'macOS'
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ matrix.target }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}-openssl${{ env.OPENSSL_VER }}-icu${{ env.ICU_VER }}
+
+      - name: Build OpenSSL + ICU for macOS ${{ env.MACOSX_DEPLOYMENT_TARGET }}
+        if: runner.os == 'macOS' && steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          DEPS="$PWD/deps"
+          NCPU="$(sysctl -n hw.ncpu)"
+          # OpenSSL: Apple's libssl is private API and postgres' configure
+          # refuses it, so pgcrypto needs a real OpenSSL.
+          curl -fsSL -o openssl.tar.gz \
+            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VER}/openssl-${OPENSSL_VER}.tar.gz"
+          tar -xzf openssl.tar.gz
+          (cd "openssl-${OPENSSL_VER}" \
+            && ./Configure darwin64-arm64-cc shared no-tests no-docs \
+                 --prefix="$DEPS" --libdir=lib \
+                 "-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
+            && make -j"$NCPU" >/dev/null \
+            && make install_sw >/dev/null)
+          # ICU for --with-icu (ICU collations).
+          curl -fsSL -o icu.tgz \
+            "https://github.com/unicode-org/icu/releases/download/release-${ICU_VER}/icu4c-${ICU_VER/-/_}-src.tgz"
+          tar -xzf icu.tgz
+          (cd icu/source \
+            && ./runConfigureICU MacOSX --prefix="$DEPS" \
+                 --disable-samples --disable-tests --disable-extras \
+            && make -j"$NCPU" >/dev/null \
+            && make install >/dev/null)
+          ls -l "$DEPS/lib"
 
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
@@ -185,8 +235,8 @@ jobs:
           # Build flags differ slightly between platforms because of where
           # the package managers put OpenSSL + uuid.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            OPENSSL_PREFIX="$(brew --prefix openssl@3)"
-            ICU_PREFIX="$(brew --prefix icu4c)"
+            OPENSSL_PREFIX="$GITHUB_WORKSPACE/deps"
+            ICU_PREFIX="$GITHUB_WORKSPACE/deps"
             export CPPFLAGS="-I$OPENSSL_PREFIX/include -I$ICU_PREFIX/include"
             # headerpad: room for install_name_tool to rewrite load
             # commands in the relocation step below.

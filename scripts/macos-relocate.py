@@ -22,7 +22,8 @@ macOS kills binaries with a broken one.
 `check` fails (exit 1) if any Mach-O references a path that is not under
 /usr/lib or /System and not an @loader_path/@rpath/@executable_path path
 that resolves to a file inside <root>, has an absolute LC_RPATH, or has a
-signature that does not verify.
+signature that does not verify, or was built for a newer macOS than
+$MACOS_MIN (default 12.0, the desktop app's minimumSystemVersion).
 """
 
 import os
@@ -144,6 +145,9 @@ def fix(root):
                 src = resolve_relative(dep, path, origins.get(path))
                 if src is None:
                     sys.exit(f"{path}: cannot resolve {dep}")
+            elif "/" not in dep:
+                # Bare leaf name: resolved next to the file at link time.
+                src = os.path.join(origins.get(path, os.path.dirname(path)), dep)
             else:
                 src = dep
             target = os.path.join(libdir, name)
@@ -175,9 +179,28 @@ def fix(root):
     print(f"signed {len(macho_files(root))} Mach-O files")
 
 
+def version_tuple(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def min_os(path):
+    """Deployment target(s) recorded in the binary (one per arch slice)."""
+    out, lines = [], run("otool", "-l", path).splitlines()
+    for i, line in enumerate(lines):
+        cmd = line.strip()
+        if cmd in ("cmd LC_BUILD_VERSION", "cmd LC_VERSION_MIN_MACOSX"):
+            for follow in lines[i + 1 : i + 6]:
+                parts = follow.split()
+                if parts and parts[0] in ("minos", "version"):
+                    out.append(parts[1])
+                    break
+    return out
+
+
 def check(root):
     root = os.path.abspath(root)
     problems = []
+    macos_min = os.environ.get("MACOS_MIN", "12.0")
     files = macho_files(root)
     for path in files:
         rel = os.path.relpath(path, root)
@@ -198,6 +221,9 @@ def check(root):
         for rp in rpaths(path):
             if not rp.startswith("@"):
                 problems.append(f"{rel}: absolute LC_RPATH {rp}")
+        for v in min_os(path):
+            if version_tuple(v) > version_tuple(macos_min):
+                problems.append(f"{rel}: built for macOS {v}, newer than {macos_min}")
         r = subprocess.run(["codesign", "--verify", path], capture_output=True, text=True)
         if r.returncode != 0:
             problems.append(f"{rel}: codesign --verify failed: {r.stderr.strip()}")

@@ -45,6 +45,11 @@ and `scripts/smoke-test.sh` extracts the finished archive into a temp dir
 and runs `initdb`, `pg_ctl start` and `CREATE EXTENSION vector, pgcrypto,
 "uuid-ossp"` with every `DYLD_*` variable unset.
 
+Every Mach-O in the macOS archive targets macOS 12.0 (the desktop app's
+`minimumSystemVersion`). OpenSSL and ICU are built from source with that
+deployment target instead of taken from Homebrew, whose bottles target the
+runner's own macOS; the check fails the build on any newer `minos`.
+
 Each archive carries a `BUNDLE_RELEASE` file at its root holding the
 release tag, so the desktop can tell a cached install of the current
 release from an older one at the same Postgres version.
