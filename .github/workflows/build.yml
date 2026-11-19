@@ -243,6 +243,11 @@ jobs:
             export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$ICU_PREFIX/lib -Wl,-headerpad_max_install_names"
             export PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
             CONFIGURE_EXTRA="--with-uuid=e2fs"
+            # configure finds strchrnul by a link test against the macOS 15
+            # SDK, but it only exists from macOS 15.4, so the build fails
+            # under the 12.0 deployment target (unguarded-availability).
+            # Use PG's own fallback, as later PG 16 minors do on macOS.
+            export ac_cv_func_strchrnul=no
           else
             # e2fs (libuuid), NOT ossp. We install `uuid-dev` (= libuuid,
             # the e2fsprogs backend) above — NOT `libossp-uuid-dev` — so
