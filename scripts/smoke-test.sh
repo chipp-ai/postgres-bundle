@@ -27,6 +27,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The desktop's extractor (postgresql_archive) unpacks only files,
+# directories and symlinks and skips everything else without an error, so
+# any other entry type (a hardlink, above all) is a file missing on users'
+# Macs. `tar -tv` prints the type as the first character of each line.
+ODD="$(tar -tvzf "$ARCHIVE" | grep -vE '^[-dl]' || true)"
+if [ -n "$ODD" ]; then
+  echo "archive has entries the desktop extractor skips (hardlinks?):" >&2
+  printf '%s\n' "$ODD" | head -20 >&2
+  exit 1
+fi
+
 tar -xzf "$ARCHIVE" -C "$PGROOT"
 echo "extracted to $PGROOT"
 "$PGROOT/bin/postgres" --version
@@ -53,6 +64,12 @@ fi
 CREATE EXTENSION vector;
 CREATE EXTENSION pgcrypto;
 CREATE EXTENSION "uuid-ossp";
+-- sqlx, which the desktop uses, sends TimeZone=UTC on every connection.
+SET TimeZone = 'UTC';
+SET TimeZone = 'Etc/UTC';
+SET TimeZone = 'GMT';
+SET TimeZone = 'UTC';
+SELECT current_setting('TimeZone') AS timezone, now() IS NOT NULL AS now_ok;
 SELECT version();
 SELECT extname, extversion FROM pg_extension ORDER BY extname;
 SELECT '[1,2,3]'::vector <-> '[4,5,6]'::vector AS l2_distance,

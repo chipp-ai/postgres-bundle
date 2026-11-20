@@ -74,7 +74,7 @@ git tag v16.3.0+pgvector-0.7.4
 git push origin v16.3.0+pgvector-0.7.4
 ```
 
-Tag format is `v<postgres-version>+pgvector-<pgvector-version>`, with an optional `-rN` suffix for a rebuild of the same versions (e.g. `v16.3.0+pgvector-0.7.4-r2`). The workflow parses the parts, builds on two runners in parallel (macOS arm64, linux x86_64), and attaches both tarballs to the resulting GitHub release. The archive names never carry the revision; `postgresql_archive` picks the highest matching tag by semver, and `pgvector-0.7.4-r2` sorts above `pgvector-0.7.4`. (Build metadata compares as text, so after `-r9` the next revision is `-r90`, not `-r10`.)
+Tag format is `v<postgres-version>+pgvector-<pgvector-version>`, with an optional `-rN` suffix for a rebuild of the same versions (e.g. `v16.3.0+pgvector-0.7.4-r3`). The workflow parses the parts, builds on two runners in parallel (macOS arm64, linux x86_64), and attaches both tarballs to the resulting GitHub release. The archive names never carry the revision; `postgresql_archive` picks the highest matching tag by semver, and `pgvector-0.7.4-r2` sorts above `pgvector-0.7.4`. (Build metadata compares as text, so after `-r9` the next revision is `-r90`, not `-r10`.)
 
 You can also trigger a build without a tag via `workflow_dispatch` — useful for testing changes to the workflow itself.
 

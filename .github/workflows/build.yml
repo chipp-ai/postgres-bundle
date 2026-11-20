@@ -315,6 +315,24 @@ jobs:
         if: runner.os == 'macOS'
         run: python3 -I repo/scripts/macos-relocate.py check staging
 
+      - name: Replace hardlinks with copies
+        run: |
+          set -e
+          # zic installs every timezone alias (UTC, Etc/UTC, Zulu, GMT, ...)
+          # as a hardlink, and tar stores hardlinks as link entries. The
+          # postgresql_archive extractor the desktop uses only unpacks
+          # files, directories and symlinks, so it skipped all 245 link
+          # entries in r2: share/timezone had Universal but no UTC, and
+          # every connection that sets TimeZone=UTC failed. Give each name
+          # its own file so the archive has no link entries at all.
+          before="$(find staging -type f -links +1 | wc -l | tr -d ' ')"
+          find staging -type f -links +1 | while IFS= read -r f; do
+            cp -p "$f" "$f.unlink" && mv -f "$f.unlink" "$f"
+          done
+          after="$(find staging -type f -links +1 | wc -l | tr -d ' ')"
+          echo "hardlinked files: ${before} before, ${after} after"
+          test "$after" = "0"
+
       - name: Write bundle marker
         env:
           TAG: ${{ needs.parse-versions.outputs.tag }}
