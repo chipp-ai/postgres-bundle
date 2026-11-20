@@ -50,6 +50,20 @@ Every Mach-O in the macOS archive targets macOS 12.0 (the desktop app's
 deployment target instead of taken from Homebrew, whose bottles target the
 runner's own macOS; the check fails the build on any newer `minos`.
 
+## Linux archives are relocatable
+
+The Linux build links the Ubuntu runner's system libraries, so before r4
+the archive ran only where those exact sonames exist: on Arch (ICU 78,
+libxml2 2.14) `initdb` failed on `libicuuc.so.74` and `postgres` on
+`libxml2.so.2`. `scripts/linux-relocate.py fix` copies every library
+outside the C runtime (glibc, the loader, libgcc_s, libstdc++) into `lib/`
+(ICU, OpenSSL, libxml2, libxslt, readline, zlib, uuid and their
+dependencies) and sets each ELF's RUNPATH to `$ORIGIN/...` with patchelf.
+`scripts/linux-relocate.py check` reads every ELF's dynamic section and
+fails the build on a non-`$ORIGIN` RUNPATH or a needed library that is
+neither in `lib/` nor in the C runtime. The check does not use `ldd`, so
+the runner's own `/usr/lib` cannot hide a missing library.
+
 Each archive carries a `BUNDLE_RELEASE` file at its root holding the
 release tag, so the desktop can tell a cached install of the current
 release from an older one at the same Postgres version.

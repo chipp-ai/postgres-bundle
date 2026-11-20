@@ -194,7 +194,7 @@ jobs:
           sudo apt-get install -y \
             build-essential libssl-dev libreadline-dev zlib1g-dev \
             libxml2-dev libxslt1-dev uuid-dev libicu-dev pkg-config \
-            bison flex perl
+            bison flex perl patchelf
 
       - name: Download + extract PostgreSQL ${{ needs.parse-versions.outputs.pg }} source
         env:
@@ -314,6 +314,21 @@ jobs:
       - name: Verify macOS install is relocatable
         if: runner.os == 'macOS'
         run: python3 -I repo/scripts/macos-relocate.py check staging
+
+      - name: Make Linux install relocatable
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          # As built, the binaries load ICU, OpenSSL, libxml2 and the rest
+          # from this runner's /usr/lib, so the archive only ran where those
+          # sonames exist: on Arch, initdb failed on libicuuc.so.74 and
+          # postgres on libxml2.so.2. Copy every library outside the C
+          # runtime into lib/ and set each RUNPATH to $ORIGIN.
+          python3 -I repo/scripts/linux-relocate.py fix staging
+
+      - name: Verify Linux install is relocatable
+        if: runner.os == 'Linux'
+        run: python3 -I repo/scripts/linux-relocate.py check staging
 
       - name: Replace hardlinks with copies
         run: |
